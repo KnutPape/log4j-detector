@@ -107,3 +107,9 @@ jar distributed by Spring.
 The inspiration for the improvements to this tool came from a client request,
 and they also requested the addition of a central reporting server to collect
 results so we decided to include that functionality as well.
+
+## DISCLAIMER
+This work is based on a tool from praetorian inc. (Thanks!)
+I have adopted to tool to detect vulnerable spring-jars and tested it.
+I am an expirienced programmer but have never used GO before - so no gurantees implied.
+Use it as it is, fork it, improve it (pull requests welcome!) hopefully you will find it usefull.
