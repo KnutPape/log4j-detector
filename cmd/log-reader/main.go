@@ -21,15 +21,14 @@ import (
 	"fmt"
 	"log"
 	"os"
-    "strings"
-     
-	"github.com/hashicorp/go-version"
+
 	"github.com/praetorian-inc/log4j-remediation/pkg/build"
+	detector "github.com/praetorian-inc/log4j-remediation/pkg/detector/spring"
 	"github.com/praetorian-inc/log4j-remediation/pkg/types"
 )
 
 var (
-    debugmode    bool 
+	debugmode    bool
 	printversion bool
 	outputjson   bool
 	logFile      string
@@ -60,96 +59,31 @@ func main() {
 			continue
 		}
 
-		var report types.Report
-		err = json.Unmarshal(line, &report)
-		if err != nil {
-			log.Fatalf("failed to unmarshal json: %s", err)
-		}
-
-		for _, vuln := range DetectVulnerabilities(report) {
-			if outputjson {
-				js.Encode(vuln) // nolint:errcheck
-			} else {
-				fmt.Printf("%s: vulnerable version %s loaded by process [%d] %s in %s\n",
-					vuln.Hostname, vuln.Version, vuln.ProcessID, vuln.ProcessName, vuln.Path)
-			}
-		}
+		// nolint:errcheck
+		processReport(line, js)
 	}
 }
 
-// Per https://tanzu.vmware.com/security/cve-2022-22965
-var (
-	// Version fixes vulnerability.
-	fixedVersion_5_3 = version.Must(version.NewVersion("5.3.18"))
-	fixedVersion_5_2 = version.Must(version.NewVersion("5.2.20"))
-)
+func processReport(line []byte, js *json.Encoder) int {
+	var report types.Report
+	var err error
 
-func DetectVulnerabilities(report types.Report) []types.Vulnerability {
-	var vulns []types.Vulnerability
-
-	for _, r := range report.Results {
-		var vulnerableJAR *types.JAREntry
-
-		for i, jar := range r.JARs {
-            if "unknown" == jar.Version {
-                if (debugmode) {
-    			     fmt.Printf("Ignoring Version jar %s: version %s\n", jar.Path, jar.Version)
-                }
-				continue
-            }
-            
-            stringcontainsrelease := strings.Contains(jar.Version, "RELEASE")
-            if(debugmode) {
-   			   fmt.Printf("Check if String contains Release %s: %s\n", jar.Version, stringcontainsrelease)
-            }
-               
-            if stringcontainsrelease {
-                if(debugmode) {
-       			   fmt.Printf("Versuche Fehler beim decoding der Version zu beheben: decoding Version jar %s: version %s\n", jar.Path, jar.Version)
-                }
-                jar.Version = strings.Replace(jar.Version, ".RELEASE", "", 1)
-            }
-                        
-			v, err := version.NewVersion(jar.Version)
-			if err != nil {
-  			   fmt.Printf("Failure decoding Version jar %s: version %s\n", jar.Path, jar.Version)
-			   continue
-			}
-            
-            if(debugmode) {
-			 fmt.Printf("Processing jar %s: version %s\n", jar.Path, jar.Version)
-            }
-
-			if v.Equal(fixedVersion_5_2) {
-			     fmt.Printf("Ignored (fixed) 5.2.x jar %s: version %s\n", jar.Path, jar.Version)
-				continue
-			}
-            
-			if v.Equal(fixedVersion_5_3) {
-			     fmt.Printf("Ignored (fixed) 5.3.x jar %s: version %s\n", jar.Path, jar.Version)
-				continue
-			}
-
-			if v.LessThan(fixedVersion_5_2) || v.LessThan(fixedVersion_5_3) {
-                if(debugmode) {
-			     fmt.Printf("Match for  jar %s: version %s\n", jar.Path, jar.Version)
-                 }
-				vulnerableJAR = &r.JARs[i]
-
-        		// If we get here, we're vulnerable
-        		vulns = append(vulns, types.Vulnerability{
-        			Hostname:    report.Hostname,
-        			ProcessID:   r.PID,
-        			ProcessName: r.ProcessName,
-        			Version:     vulnerableJAR.Version,
-        			Path:        vulnerableJAR.Path,
-        			SHA256:      vulnerableJAR.SHA256,
-        		})
-
-			}
-		}
-
+	err = json.Unmarshal(line, &report)
+	if err != nil {
+		log.Fatalf("failed to unmarshal json: %s", err)
 	}
 
-	return vulns
+	var cnt int
+	cnt = 0
+	for _, vuln := range detector.DetectVulnerabilities(report, debugmode) {
+		if outputjson {
+			js.Encode(vuln)
+		} else {
+			fmt.Printf("%s: vulnerable version %s loaded by process [%d] %s in %s\n",
+				vuln.Hostname, vuln.Version, vuln.ProcessID, vuln.ProcessName, vuln.Path)
+		}
+		cnt++
+	}
+
+	return cnt
 }

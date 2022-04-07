@@ -28,6 +28,7 @@ const (
 	SourceJAR      VersionSource = "jar"
 	SourceClass    VersionSource = "class"
 	SourceMetadata VersionSource = "metadata"
+	SourceFilename VersionSource = "filename"
 )
 
 type Report struct {
@@ -61,9 +62,11 @@ type ReportEntry struct {
 
 type JAREntry struct {
 	Path          string        `json:"path"`
+	Name          string        `json:"name"`
 	Version       string        `json:"version"`
 	VersionSource VersionSource `json:"version_source,omitempty"`
 	SHA256        string        `json:"sha256"`
+	Vulnerable    bool          `json:"isVulnerable"`
 }
 
 type FileEntry struct {

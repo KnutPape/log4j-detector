@@ -38,15 +38,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/go-version"
 	"github.com/shirou/gopsutil/process"
 
 	"github.com/praetorian-inc/log4j-remediation/pkg/build"
+	file "github.com/praetorian-inc/log4j-remediation/pkg/detector/file"
+	jar "github.com/praetorian-inc/log4j-remediation/pkg/detector/jar"
+	detector "github.com/praetorian-inc/log4j-remediation/pkg/detector/spring"
+
 	"github.com/praetorian-inc/log4j-remediation/pkg/types"
 )
 
 var (
-    debugmode         bool
+	debugmode         bool
 	printversion      bool
 	verbose           bool
 	reportAddr        string
@@ -75,7 +78,7 @@ func main() {
 
 	hostname, err := os.Hostname()
 	if err != nil {
-		hostname = Unknown
+		hostname = jar.Unknown
 	}
 
 	var ips []string
@@ -96,14 +99,14 @@ func main() {
 
 	procs, err := process.Processes()
 	if err != nil {
-		log.Fatalf("error getting processes: %+v", err) //nolint:gocritic
+		log.Fatalf("Missing Access-Rigths: error getting processes: %+v", err) //nolint:gocritic
 	}
 
 	if verbose {
 		log.Printf("running scan of %d processes", len(procs))
 	}
 
-	report := makeReport(procs)
+	report := scanProcessArrayForVulnerabilities(procs)
 
 	if verbose {
 		log.Printf("finished scan with %d results", len(report))
@@ -123,7 +126,7 @@ func main() {
 		Results:     report,
 	}
 
-	r.Vulnerabilities = DetectVulnerabilities(r)
+	r.Vulnerabilities = detector.DetectVulnerabilities(r, debugmode)
 
 	if verbose {
 		log.Printf("sending report to %s", reportAddr)
@@ -138,7 +141,6 @@ func main() {
 	if err != nil {
 		log.Println(err)
 	}
-    
 
 	log.Println("--")
 	for _, vuln := range r.Vulnerabilities {
@@ -149,7 +151,7 @@ func main() {
 
 }
 
-func makeReport(procs []*process.Process) (ret []types.ReportEntry) {
+func scanProcessArrayForVulnerabilities(procs []*process.Process) (ret []types.ReportEntry) {
 	ownpid := os.Getpid()
 	for _, proc := range procs {
 		// skip self
@@ -164,14 +166,14 @@ func makeReport(procs []*process.Process) (ret []types.ReportEntry) {
 		name, err := proc.Name()
 		if err != nil {
 			log.Printf("error getting name for process pid=%d", proc.Pid)
-			name = Unknown
+			name = jar.Unknown
 		}
 
 		if verbose {
 			log.Printf("[%d] name %s", proc.Pid, name)
 		}
 
-		processPath := Unknown
+		processPath := jar.Unknown
 		if s, err := proc.Exe(); err == nil {
 			processPath = s
 		}
@@ -240,7 +242,22 @@ func checkOpenFiles(proc *process.Process, entry *types.ReportEntry) error {
 
 	files, err := proc.OpenFilesWithContext(ctx)
 	if err != nil {
-		return fmt.Errorf("error getting open files for process %q (pid: %d): %w", entry.ProcessName, proc.Pid, err)
+		candidates := []string{"svchost.exe", "System", "mfe", "Mfe", "fontdrvhost.exe", "LogonUI.exe", "WmiPrvSE.exe", "pacjsworker.exe", "SearchIndexer.exe", "winlogon.exe", "Memory Compression", "NVDisplay.Container.exe", "csrss.exe"}
+		var printMsg = true
+		if !verbose {
+			for _, candidate := range candidates {
+				if strings.Contains(entry.ProcessName, candidate) {
+					printMsg = false
+					break
+				}
+			}
+		}
+
+		if printMsg {
+			return fmt.Errorf("Missing Access Rights: error getting open files for process %q (pid: %d): %w", entry.ProcessName, proc.Pid, err)
+		} else {
+			return nil
+		}
 	}
 
 	if verbose {
@@ -251,17 +268,17 @@ func checkOpenFiles(proc *process.Process, entry *types.ReportEntry) error {
 		if verbose {
 			log.Printf("[%d] scanning file %s", proc.Pid, file.Path)
 		}
+		/*
+			if strings.Contains(file.Path, "spring") {
+				zr, err := zip.OpenReader(file.Path)
+				if err != nil {
+					continue
+				}
 
-		if strings.Contains(file.Path, "spring") {
-			zr, err := zip.OpenReader(file.Path)
-			if err != nil {
-				continue
+				entry.JARs = append(entry.JARs, jarEntryFromZip(file.Path, &zr.Reader))
+				zr.Close()
 			}
-
-			entry.JARs = append(entry.JARs, jarEntryFromZip(file.Path, &zr.Reader))
-			zr.Close()
-		}
-
+		*/
 		if strings.HasSuffix(strings.ToLower(file.Path), ".jar") {
 			if err := checkJarFile(entry, file); err != nil {
 				return fmt.Errorf("error checking JAR file %q for process %q (pid: %d): %w",
@@ -322,7 +339,7 @@ func checkJarFile(entry *types.ReportEntry, openFile process.OpenFilesStat) erro
 				continue
 			}
 
-			hash := hashFsFile(fr)
+			hash := file.HashFsFile(fr)
 			fr.Close()
 
 			entry.Classes = append(entry.Classes, types.FileEntry{
@@ -333,10 +350,10 @@ func checkJarFile(entry *types.ReportEntry, openFile process.OpenFilesStat) erro
 		}
 	}
 
-	jar := jarEntryFromZip(openFile.Path, r)
-	if jar.Version != Unknown && jar.VersionSource != types.SourceMetadata {
-		entry.JARs = append(entry.JARs, jar)
-	}
+	jar := jar.JarEntryFromZip(openFile.Path, r, verbose)
+	//	if jar.Version != Unknown && jar.VersionSource != types.SourceMetadata {
+	entry.JARs = append(entry.JARs, jar)
+	//	}
 
 	return nil
 }
@@ -346,11 +363,11 @@ func getSysprops(proc *process.Process) (map[string]string, error) {
 	jinfoPath := "/usr/bin/jinfo"
 	if s, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", proc.Pid)); err == nil {
 		tpath := filepath.Join(filepath.Dir(s), "jinfo")
-		if fileExists(tpath) {
+		if file.FileExists(tpath) {
 			jinfoPath = tpath
 		}
 	}
-	if !fileExists(jinfoPath) {
+	if !file.FileExists(jinfoPath) {
 		return nil, fmt.Errorf("no jinfo found")
 	}
 
@@ -376,82 +393,4 @@ func getSysprops(proc *process.Process) (map[string]string, error) {
 	}
 
 	return ret, nil
-}
-
-
-// Per https://tanzu.vmware.com/security/cve-2022-22965
-var (
-	// Version fixes vulnerability.
-	fixedVersion_5_3 = version.Must(version.NewVersion("5.3.18"))
-	fixedVersion_5_2 = version.Must(version.NewVersion("5.2.20"))
-)
-
-func DetectVulnerabilities(report types.Report) []types.Vulnerability {
-	var vulns []types.Vulnerability
-
-	for _, r := range report.Results {
-		var vulnerableJAR *types.JAREntry
-
-		for i, jar := range r.JARs {
-            if "unknown" == jar.Version {
-                if (debugmode) {
-    			     fmt.Printf("Ignoring Version jar %s: version %s\n", jar.Path, jar.Version)
-                }
-				continue
-            }
-            
-            stringcontainsrelease := strings.Contains(jar.Version, "RELEASE")
-            if(debugmode) {
-   			   fmt.Printf("Check if String contains Release %s: %s\n", jar.Version, stringcontainsrelease)
-            }
-               
-            if stringcontainsrelease {
-                if(debugmode) {
-       			   fmt.Printf("Versuche Fehler beim decoding der Version zu beheben: decoding Version jar %s: version %s\n", jar.Path, jar.Version)
-                }
-                jar.Version = strings.Replace(jar.Version, ".RELEASE", "", 1)
-            }
-                        
-			v, err := version.NewVersion(jar.Version)
-			if err != nil {
-  			   fmt.Printf("Failure decoding Version jar %s: version %s\n", jar.Path, jar.Version)
-			   continue
-			}
-            
-            if(debugmode) {
-			 fmt.Printf("Processing jar %s: version %s\n", jar.Path, jar.Version)
-            }
-
-			if v.Equal(fixedVersion_5_2) {
-			     fmt.Printf("Ignored (fixed) 5.2.x jar %s: version %s\n", jar.Path, jar.Version)
-				continue
-			}
-            
-			if v.Equal(fixedVersion_5_3) {
-			     fmt.Printf("Ignored (fixed) 5.3.x jar %s: version %s\n", jar.Path, jar.Version)
-				continue
-			}
-
-			if v.LessThan(fixedVersion_5_2) || v.LessThan(fixedVersion_5_3) {
-                if(debugmode) {
-			     fmt.Printf("Match for  jar %s: version %s\n", jar.Path, jar.Version)
-                 }
-				vulnerableJAR = &r.JARs[i]
-
-        		// If we get here, we're vulnerable
-        		vulns = append(vulns, types.Vulnerability{
-        			Hostname:    report.Hostname,
-        			ProcessID:   r.PID,
-        			ProcessName: r.ProcessName,
-        			Version:     vulnerableJAR.Version,
-        			Path:        vulnerableJAR.Path,
-        			SHA256:      vulnerableJAR.SHA256,
-        		})
-
-			}
-		}
-
-	}
-
-	return vulns
 }

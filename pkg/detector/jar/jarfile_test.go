@@ -15,47 +15,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package jar
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"io"
-	"io/fs"
-	"os"
+	"testing"
 )
 
-func hashFile(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return "error"
-	}
-	defer f.Close()
+func TestVersionFromJARFileName(t *testing.T) {
+	_, result1 := versionFromJARFileName("\\\\?\\C:\\Users\\Pape\\.m2\\repository\\org\\springframework\\spring-jcl\\5.3.15\\spring-jcl-5.3.15.jar")
 
-	return hashFsFile(f)
-}
-
-func hashFsFile(f fs.File) string {
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, f); err != nil {
-		return "error"
+	if "5.3.15" != result1 {
+		t.Errorf("Didn't Expected Version! %s", result1)
 	}
 
-	return hex.EncodeToString(hasher.Sum(nil))
-}
+	_, result2 := versionFromJARFileName("\\\\?\\C:\\Users\\Pape\\.m2\\repository\\org\\unbescape\\unbescape\\1.1.6.RELEASE\\unbescape-1.1.6.RELEASE.jar")
 
-func fileExists(path string) bool {
-	info, err := os.Lstat(path)
-
-	switch {
-	case os.IsNotExist(err):
-		// path does not exist
-		return false
-	case err != nil:
-		// return true since error is not of type IsNotExist
-		return true
-	default:
-		// return true only if this is a file
-		return info.Mode().IsRegular()
+	if "1.1.6.RELEASE" != result2 {
+		t.Errorf("Didn't Expected Version! %s", result2)
 	}
+
 }
